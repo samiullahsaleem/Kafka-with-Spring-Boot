@@ -1,7 +1,10 @@
 package com.example.demo.controller;
 
 import com.example.demo.model.Message;
+import com.example.demo.model.Order;
 import com.example.demo.service.KafkaConsumerService;
+import com.example.demo.service.KafkaOrderConsumerService;
+import com.example.demo.service.KafkaOrderProducerService;
 import com.example.demo.service.KafkaProducerService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
@@ -29,6 +32,12 @@ public class KafkaController {
 
     @Autowired(required = false)
     private KafkaConsumerService consumerService;
+
+    @Autowired(required = false)
+    private KafkaOrderProducerService orderProducerService;
+
+    @Autowired(required = false)
+    private KafkaOrderConsumerService orderConsumerService;
 
     @GetMapping("/send-dummy")
     public ResponseEntity<Map<String, Object>> sendDummyMessage() {
@@ -228,6 +237,138 @@ public class KafkaController {
         response.put("status", "connected");
         response.put("service", "Kafka MSK Integration");
         response.put("consumedMessageCount", consumerService.getConsumedMessages().size());
+        return ResponseEntity.ok(response);
+    }
+
+    // ===== ORDER ENDPOINTS =====
+
+    @GetMapping("/send-dummy-order")
+    public ResponseEntity<Map<String, Object>> sendDummyOrder() {
+        if (!kafkaEnabled || orderProducerService == null) {
+            Map<String, Object> errorResponse = new HashMap<>();
+            errorResponse.put("status", "error");
+            errorResponse.put("message", "Kafka is not enabled. Please start Kafka with ./start-local-kafka.sh");
+            return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).body(errorResponse);
+        }
+
+        // Generate random dummy order data
+        String[] names = {"John Doe", "Jane Smith", "Alice Johnson", "Bob Williams", "Charlie Brown", "Diana Prince"};
+        String[] cities = {"New York", "Los Angeles", "Chicago", "Houston", "Phoenix", "Philadelphia"};
+        String[] locations = {"123 Main St", "456 Oak Ave", "789 Pine Rd", "321 Elm St", "654 Maple Dr"};
+        
+        String randomName = names[(int) (Math.random() * names.length)];
+        String randomCity = cities[(int) (Math.random() * cities.length)];
+        String randomLocation = locations[(int) (Math.random() * locations.length)];
+        
+        Order order = new Order(
+            randomName,
+            randomName.toLowerCase().replace(" ", ".") + "@example.com",
+            "+1-" + (int)(Math.random() * 900 + 100) + "-" + (int)(Math.random() * 900 + 100) + "-" + (int)(Math.random() * 9000 + 1000),
+            randomCity,
+            randomLocation
+        );
+        order.setStripePaymentId("pi_" + UUID.randomUUID().toString().substring(0, 24));
+        order.setPaymentDate(LocalDateTime.now());
+
+        orderProducerService.sendOrder(order);
+
+        Map<String, Object> response = new HashMap<>();
+        response.put("status", "success");
+        response.put("message", "Dummy order sent to Kafka successfully!");
+        response.put("data", order);
+        response.put("info", "Check /api/kafka/orders to see consumed orders");
+        return ResponseEntity.ok(response);
+    }
+
+    @GetMapping("/send-dummy-orders")
+    public ResponseEntity<Map<String, Object>> sendDummyOrders(@RequestParam(defaultValue = "5") int count) {
+        if (!kafkaEnabled || orderProducerService == null) {
+            Map<String, Object> errorResponse = new HashMap<>();
+            errorResponse.put("status", "error");
+            errorResponse.put("message", "Kafka is not enabled. Please start Kafka with ./start-local-kafka.sh");
+            return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).body(errorResponse);
+        }
+
+        if (count < 1 || count > 100) {
+            Map<String, Object> errorResponse = new HashMap<>();
+            errorResponse.put("status", "error");
+            errorResponse.put("message", "Count must be between 1 and 100");
+            return ResponseEntity.badRequest().body(errorResponse);
+        }
+
+        String[] names = {"John Doe", "Jane Smith", "Alice Johnson", "Bob Williams", "Charlie Brown", "Diana Prince", "Eve Davis", "Frank Miller"};
+        String[] cities = {"New York", "Los Angeles", "Chicago", "Houston", "Phoenix", "Philadelphia", "San Antonio", "San Diego"};
+        String[] locations = {"123 Main St", "456 Oak Ave", "789 Pine Rd", "321 Elm St", "654 Maple Dr", "987 Cedar Ln", "147 Birch Ct"};
+
+        List<Order> sentOrders = new java.util.ArrayList<>();
+        for (int i = 0; i < count; i++) {
+            String randomName = names[(int) (Math.random() * names.length)];
+            String randomCity = cities[(int) (Math.random() * cities.length)];
+            String randomLocation = locations[(int) (Math.random() * locations.length)];
+            
+            Order order = new Order(
+                randomName,
+                randomName.toLowerCase().replace(" ", ".") + "@example.com",
+                "+1-" + (int)(Math.random() * 900 + 100) + "-" + (int)(Math.random() * 900 + 100) + "-" + (int)(Math.random() * 9000 + 1000),
+                randomCity,
+                randomLocation
+            );
+            order.setStripePaymentId("pi_" + UUID.randomUUID().toString().substring(0, 24));
+            order.setPaymentDate(LocalDateTime.now());
+
+            orderProducerService.sendOrder(order);
+            sentOrders.add(order);
+        }
+
+        Map<String, Object> response = new HashMap<>();
+        response.put("status", "success");
+        response.put("message", count + " dummy orders sent to Kafka successfully!");
+        response.put("sentCount", count);
+        response.put("orders", sentOrders);
+        response.put("info", "Check /api/kafka/orders to see consumed orders");
+        return ResponseEntity.ok(response);
+    }
+
+    @GetMapping("/orders")
+    public ResponseEntity<Map<String, Object>> getConsumedOrders() {
+        if (!kafkaEnabled || orderConsumerService == null) {
+            Map<String, Object> errorResponse = new HashMap<>();
+            errorResponse.put("status", "error");
+            errorResponse.put("message", "Kafka is not enabled");
+            return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).body(errorResponse);
+        }
+
+        List<Order> orders = orderConsumerService.getConsumedOrders();
+        
+        Map<String, Object> response = new HashMap<>();
+        response.put("status", "success");
+        response.put("totalOrders", orders.size());
+        response.put("orders", orders);
+        response.put("info", "These are all orders consumed from Kafka 'orders' topic");
+        response.put("actions", Map.of(
+            "sendDummyOrder", "GET /api/kafka/send-dummy-order",
+            "sendMultipleOrders", "GET /api/kafka/send-dummy-orders?count=N",
+            "clearOrders", "DELETE /api/kafka/orders"
+        ));
+        return ResponseEntity.ok(response);
+    }
+
+    @DeleteMapping("/orders")
+    public ResponseEntity<Map<String, String>> clearOrders() {
+        if (!kafkaEnabled || orderConsumerService == null) {
+            Map<String, String> errorResponse = new HashMap<>();
+            errorResponse.put("status", "error");
+            errorResponse.put("message", "Kafka is not enabled");
+            return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).body(errorResponse);
+        }
+
+        int clearedCount = orderConsumerService.getConsumedOrders().size();
+        orderConsumerService.clearOrders();
+        
+        Map<String, String> response = new HashMap<>();
+        response.put("status", "success");
+        response.put("message", "All consumed orders cleared");
+        response.put("clearedCount", String.valueOf(clearedCount));
         return ResponseEntity.ok(response);
     }
 }
